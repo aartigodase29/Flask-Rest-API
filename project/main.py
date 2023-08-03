@@ -1,85 +1,61 @@
-from app import app, mongo
-from bson.json_util import dumps
+from flask import Flask, request
+from flask_restful import Resource, Api, reqparse
+from pymongo import MongoClient
 from bson.objectid import ObjectId
-from flask import jsonify, request
-#from werkzeug import generate_password_hash, check_password_hash
-from werkzeug.security import generate_password_hash, check_password_hash
 
-@app.route('/add', methods=['POST'])
-def add_user():
-    _json = request.json
-    _name = _json['name']
-    _email = _json['email']
-    _password = _json['pwd']
-    # validate the received values
+app = Flask(__name__)
+api = Api(app)
 
-    if _name and _email and _password and request.method == 'POST':
-        # do not save password as a plain text
-        _hashed_password = generate_password_hash(_password)
-        # save details
-        id=mongo.db.user.insert({'name': _name, 'email': _email, 'pwd': _hashed_password})
+# # Configure MongoDB URI and database name
+app.config['MONGO_URI'] = 'mongodb://localhost:27017/user_database'
+app.config['MONGO_DB'] = 'user_database'
 
-        resp = jsonify('User added successfully!')
-        resp.status_code = 200
-        return resp
-    else:
-        return not_found()
+# Initialize PyMongo client and database
+mongo = MongoClient(app.config['MONGO_URI'])
+db = mongo[app.config['MONGO_DB']]
+
+# User resource fields: id, name, email, password
+user_fields = ['name', 'email', 'password']
+
+# Request parser for POST and PUT requests
+parser = reqparse.RequestParser()
+for field in user_fields:
+    parser.add_argument(field, required=True)
 
 
-@app.route('/users')
-def users():
-    users = mongo.db.user.find()
-    resp = dumps(users)
-    return resp
+class UserResource(Resource):
+    def get(self, user_id=None):
+        if user_id:
+            user = db.users.find_one({'_id': ObjectId(user_id)}, {'_id': 0})
+            if user:
+                return user
+            return {'message': 'User not found'}, 404
+        else:
+            users = list(db.users.find({}, {'_id': 0}))
+            return users
+
+    def post(self):
+        args = parser.parse_args()
+        user_id = db.users.insert_one(args).inserted_id
+        new_user = db.users.find_one({'_id': user_id}, {'_id': 0})
+        return new_user, 201
+
+    def put(self, user_id):
+        args = parser.parse_args()
+        result = db.users.update_one({'_id': ObjectId(user_id)}, {'$set': args})
+        if result.modified_count:
+            updated_user = db.users.find_one({'_id': ObjectId(user_id)}, {'_id': 0})
+            return updated_user
+        return {'message': 'User not found'}, 404
+
+    def delete(self, user_id):
+        result = db.users.delete_one({'_id': ObjectId(user_id)})
+        if result.deleted_count:
+            return {'message': 'User deleted successfully'}
+        return {'message': 'User not found'}, 404
 
 
-@app.route('/user/<id>')
-def user(id):
-    user = mongo.db.user.find_one({'_id': ObjectId(id)})
-    resp = dumps(user)
-    return resp
+api.add_resource(UserResource, '/users', '/users/<string:user_id>')
 
-
-@app.route('/update', methods=['PUT'])
-def update_user():
-    _json = request.json
-    _id = _json['_id']
-    _name = _json['name']
-    _email = _json['email']
-    _password = _json['pwd']
-    # validate the received values
-    if _name and _email and _password and _id and request.method == 'PUT':
-        # do not save password as a plain text
-        _hashed_password = generate_password_hash(_password)
-        # save edits
-        mongo.db.user.update_one({'_id': ObjectId(_id['$oid']) if '$oid' in _id else ObjectId(_id)},
-                                 {'$set': {'name': _name, 'email': _email, 'pwd': _hashed_password}})
-        resp = jsonify('User updated successfully!')
-        resp.status_code = 200
-        return resp
-    else:
-        return not_found()
-
-
-@app.route('/delete/<id>', methods=['DELETE'])
-def delete_user(id):
-    mongo.db.user.delete_one({'_id': ObjectId(id)})
-    resp = jsonify('User deleted successfully!')
-    resp.status_code = 200
-    return resp
-
-
-@app.errorhandler(404)
-def not_found(error=None):
-    message = {
-        'status': 404,
-        'message': 'Not Found: ' + request.url,
-    }
-    resp = jsonify(message)
-    resp.status_code = 404
-
-    return resp
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     app.run(debug=True)
